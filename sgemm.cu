@@ -38,6 +38,7 @@
 
 // ---- 各个 kernel(逐课添加)-------------------------------------------------
 #include "kernels/01_naive.cuh"
+#include "kernels/02_coalesce.cuh"
 
 // ---- cuBLAS 参考实现(同时是性能基线 kernel 0)----------------------------
 //
@@ -57,6 +58,7 @@ void run_kernel(int kernel, int M, int N, int K, float alpha, float *A,
   switch (kernel) {
     case 0: run_cublas(handle, M, N, K, alpha, A, B, beta, C); break;
     case 1: run_naive(M, N, K, alpha, A, B, beta, C); break;
+    case 2: run_coalesce(M, N, K, alpha, A, B, beta, C); break;
     default:
       printf("未知 kernel 编号: %d\n", kernel);
       exit(EXIT_FAILURE);

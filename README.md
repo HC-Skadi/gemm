@@ -9,8 +9,8 @@
 | # | Kernel | GFLOPs/s | 占 cuBLAS | 状态 |
 |---|--------|----------|-----------|------|
 | 0 | cuBLAS 基线 | 23249 | 100% | ✅ |
-| 1 | Naive | 309 | 1.3% | ✅ 本课 |
-| 2 | GMEM 合并访问 | 1986 | 8.5% | ⬜ |
+| 1 | Naive | 309 | 1.3% | ✅ |
+| 2 | GMEM 合并访问 | 1986 | 8.5% | ✅ 本课 |
 | 3 | SMEM 缓存分块 | 2980 | 12.8% | ⬜ |
 | 4 | 1D Blocktiling | 8474 | 36.5% | ⬜ |
 | 5 | 2D Blocktiling | 15971 | 68.7% | ⬜ |
@@ -63,3 +63,24 @@ ncu --set full -o report_k1 ./sgemm 1 4096 1
 2. **算术强度极低**:每做 1 次乘加(2 FLOP)就要从全局内存读 2 个 float(8 字节)。计算被访存彻底卡住(memory-bound)。
 
 **下一课预告**:Kernel 2 只是把 row/col 的线程映射对调一下,让同一 warp 读连续地址,吞吐就能从 ~15 GB/s 跳到 ~110 GB/s,性能提升约 6 倍。
+
+### Lesson 2 — GMEM 合并访问
+
+**代码**:[kernels/02_coalesce.cuh](kernels/02_coalesce.cuh)
+
+**唯一的改动**:线程→元素映射,让「同一 warp 内相邻线程」对应「C 的相邻列」。数学、工作量、线程数都没变,却快了约 6 倍。
+
+**核心心智模型**:合并看的是「固定第 i 次迭代时,一个 warp 的 32 个线程同时访问的地址是否连续」,而不是单个线程自己循环时是否连续。
+
+| 访问(固定 i,看整个 warp) | naive | 合并版 |
+|------|------|------|
+| A | 跨行,stride K ❌ | cRow 相同 → 广播 ✓ |
+| B | col 相同 → 广播 | cCol 连续 → 合并 ✓ |
+| C | 跨行,stride N ❌ | cCol 连续 → 合并 ✓ |
+
+**为什么还是只有 ~8.5%**:虽然访存合并了,但每个 A/B 元素仍被反复从**慢速全局内存**重复读取(A 的每一行被 N 个线程各读一遍),算术强度依旧极低,仍是 memory-bound。→ Kernel 3 用**共享内存**把 tile 缓存到片上,消除重复的全局内存读取。
+
+**对比命令**:重跑上一课的 sector 指标,应从接近 32 掉到接近 4:
+```bash
+ncu --metrics l1tex__average_t_sectors_per_request_pipe_lsu_mem_global_op_ld.ratio ./sgemm 2 4096 1
+```
