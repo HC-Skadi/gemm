@@ -1,0 +1,13 @@
+# Build artifacts
+*.o
+*.out
+sgemm
+
+# CUDA
+*.cubin
+*.fatbin
+*.ptx
+
+# Logs
+*.log
+perf_*.txt
