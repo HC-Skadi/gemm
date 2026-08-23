@@ -10,8 +10,8 @@
 |---|--------|----------|-----------|------|
 | 0 | cuBLAS 基线 | 23249 | 100% | ✅ |
 | 1 | Naive | 309 | 1.3% | ✅ |
-| 2 | GMEM 合并访问 | 1986 | 8.5% | ✅ 本课 |
-| 3 | SMEM 缓存分块 | 2980 | 12.8% | ⬜ |
+| 2 | GMEM 合并访问 | 1986 | 8.5% | ✅ |
+| 3 | SMEM 缓存分块 | 2980 | 12.8% | ✅ 本课 |
 | 4 | 1D Blocktiling | 8474 | 36.5% | ⬜ |
 | 5 | 2D Blocktiling | 15971 | 68.7% | ⬜ |
 | 6 | 向量化访存 | 18237 | 78.4% | ⬜ |
@@ -83,4 +83,26 @@ ncu --set full -o report_k1 ./sgemm 1 4096 1
 **对比命令**:重跑上一课的 sector 指标,应从接近 32 掉到接近 4:
 ```bash
 ncu --metrics l1tex__average_t_sectors_per_request_pipe_lsu_mem_global_op_ld.ratio ./sgemm 2 4096 1
+```
+
+### Lesson 3 — SMEM 缓存分块
+
+**代码**:[kernels/03_smem.cuh](kernels/03_smem.cuh)
+
+**痛点**:kernel 2 里每个 A/B 元素被反复从慢速全局内存重复读取。
+
+**思路**:一个 block 里的线程共用同一片 A/B 数据,那就沿 K 维分块,把每段 tile 先协作搬进片上共享内存(SMEM,约快 100×),大家从 SMEM 反复读。
+
+**流程**(每段 K):协作加载(合并)→ `__syncthreads()` → 从 SMEM 做部分点积 → `__syncthreads()` → 推进。两个 barrier 缺一不可:第一个保证数据齐了再算,第二个保证算完了再覆盖 SMEM。
+
+**收益**:每个 SMEM 元素被 BS=32 个线程复用 → 全局内存流量降为 1/32,算术强度提升。
+
+**为什么还是只有 ~13%**:瓶颈从"全局带宽"转移到"**SMEM 带宽 / MIO 队列**"。内层每做 1 次 FMA 要发 2 次 SMEM load,访存指令把计算单元堵住了。→ Kernel 4 让每个线程算多个输出,把从 SMEM 读到寄存器的值复用到多次 FMA,摊薄 SMEM 访问。
+
+**A100 提示**:A100 有 40MB L2(A6000 只有 6MB),kernel 2 的重复读大量命中 L2 已经很快,所以 kernel 3 相对提升会比文章的 1.5× 更温和(预计 ~3000–3800 GFLOPs)。
+
+**验证**:全局流量应下降(dram 吞吐比 kernel 2 低),瓶颈变成 SMEM:
+```bash
+ncu --metrics dram__throughput.avg.pct_of_peak_sustained_elapsed ./sgemm 3 4096 1
+ncu --set full -o report_k3 ./sgemm 3 4096 1   # 看 Warp State,会出现 MIO Throttle 停顿
 ```
