@@ -40,6 +40,7 @@
 #include "kernels/01_naive.cuh"
 #include "kernels/02_coalesce.cuh"
 #include "kernels/03_smem.cuh"
+#include "kernels/04_1d_blocktiling.cuh"
 
 // ---- cuBLAS 参考实现(同时是性能基线 kernel 0)----------------------------
 //
@@ -61,6 +62,7 @@ void run_kernel(int kernel, int M, int N, int K, float alpha, float *A,
     case 1: run_naive(M, N, K, alpha, A, B, beta, C); break;
     case 2: run_coalesce(M, N, K, alpha, A, B, beta, C); break;
     case 3: run_smem(M, N, K, alpha, A, B, beta, C); break;
+    case 4: run_1d_blocktiling(M, N, K, alpha, A, B, beta, C); break;
     default:
       printf("未知 kernel 编号: %d\n", kernel);
       exit(EXIT_FAILURE);

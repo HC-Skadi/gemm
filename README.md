@@ -11,8 +11,8 @@
 | 0 | cuBLAS 基线 | 23249 | 100% | ✅ |
 | 1 | Naive | 309 | 1.3% | ✅ |
 | 2 | GMEM 合并访问 | 1986 | 8.5% | ✅ |
-| 3 | SMEM 缓存分块 | 2980 | 12.8% | ✅ 本课 |
-| 4 | 1D Blocktiling | 8474 | 36.5% | ⬜ |
+| 3 | SMEM 缓存分块 | 2980 | 12.8% | ✅ |
+| 4 | 1D Blocktiling | 8474 | 36.5% | ✅ 本课 |
 | 5 | 2D Blocktiling | 15971 | 68.7% | ⬜ |
 | 6 | 向量化访存 | 18237 | 78.4% | ⬜ |
 | 9 | Autotuning | 19721 | 84.8% | ⬜ |
@@ -106,3 +106,17 @@ ncu --metrics l1tex__average_t_sectors_per_request_pipe_lsu_mem_global_op_ld.rat
 ncu --metrics dram__throughput.avg.pct_of_peak_sustained_elapsed ./sgemm 3 4096 1
 ncu --set full -o report_k3 ./sgemm 3 4096 1   # 看 Warp State,会出现 MIO Throttle 停顿
 ```
+
+### Lesson 4 — 1D Blocktiling
+
+**代码**:[kernels/04_1d_blocktiling.cuh](kernels/04_1d_blocktiling.cuh)
+
+**痛点**:kernel 3 内层 1 FMA : 2 SMEM load,卡在 MIO Throttle。
+
+**手法**:每个线程算 TM=8 个输出(竖条)。内层把 dotIdx 放最外层,先把 `Bs` 的值读进寄存器 `tmpB`,再用它连做 TM 次 FMA。SMEM load : FMA 从 2:1 降到 (TM+1):TM = 9:8;8 个结果累加在寄存器数组里。
+
+**分块**:BM=BN=64, BK=8, TM=8 → 线程数 = 64×64/8 = 512。
+
+**两套索引**:`innerRow/Col*`(加载,为 GMEM 合并)vs `threadRow/threadCol`(计算,铺在 64×64 输出上)。同一线程在搬数据和算数据时角色不同,别混。
+
+**A100 实测**:待填。文章 A6000 是 k3 的 2.85×(2980→8474)。
