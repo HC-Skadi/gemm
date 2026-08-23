@@ -14,7 +14,7 @@
 | 3 | SMEM 缓存分块 | 2980 | 5279.7 | 31.9% | ✅ |
 | 4 | 1D Blocktiling | 8474 | 9215.9 | 55.6% | ✅ |
 | 5 | 2D Blocktiling | 15971 | 待测 | ? | ✅ 本课 |
-| 6 | 向量化访存 | 18237 | | | ⬜ |
+| 6 | 向量化访存 | 18237 | 待测 | ? | ✅ 本课 |
 | 9 | Autotuning | 19721 | | | ⬜ |
 | 10 | Warptiling | 21779 | | | ⬜ |
 
@@ -137,3 +137,48 @@ ncu --set full -o report_k3 ./sgemm 3 4096 1   # 看 Warp State,会出现 MIO Th
 **代价**:~80+ 寄存器/线程(64 累加器 + tmpA/tmpB),occupancy 会被寄存器卡住 —— Lesson 4 问答里讲的 blockDim/occupancy 讲究在这里真实上演,可用 `ncu --section Occupancy` 观察寄存器是否成为 limiting factor。
 
 **A100 实测**:待填。文章 A6000 是 k4 的 1.88×(8474→15971)。
+
+---
+
+### 阶段小结 — Kernel 3/4/5
+
+三个 kernel 是同一条主线:把数据沿存储层级上移,每上移一层,复用次数提高一个量级。
+
+```
+寄存器   ~256KB/SM    ~0 周期     k4 的 tmpB、k5 的 64 个累加器
+SMEM     164KB/SM    ~30 周期    k3 起 tile 的存放处
+L2       40MB        ~200 周期   k2 已受益(A100 40MB vs A6000 6MB)
+HBM      80GB ~2TB/s ~400+ 周期  所有优化的起点
+```
+
+| | k3 SMEM 分块 | k4 1D Blocktiling | k5 2D Blocktiling |
+|---|---|---|---|
+| 解决的瓶颈 | GMEM 重复读 | SMEM 带宽 / MIO(1 FMA : 2 load) | SMEM 流量(9 load : 8 FMA) |
+| 手法 | tile 搬进 SMEM,block 内共用 | 每线程 TM=8 个输出,B 值进寄存器复用 8 次 | 每线程 8×8=64 个输出,tmpA、tmpB 做外积 |
+| 内层 SMEM load : FMA | 2 : 1 | 9 : 8 | 16 : 64 = 1 : 4 |
+| 算术强度(FLOP/Byte)¹ | 8 | 16 | 32 |
+| A100 实测(占 cuBLAS) | 5279.7(31.9%) | 9215.9(55.6%) | 待测 |
+
+¹ 每 BK 步搬 (BM+BN)·BK 个元素、做 BM·BN·BK 次 FMA。每 FMA 的 GMEM 流量 = 4B·(1/BM + 1/BN),对应 2 FLOP。tile 边长 32→64→128,强度 8→16→32。
+
+1. k3 之后 K 循环的骨架(加载 → sync → 算 → sync)没有再变,变化都在内层寄存器的用法。GMEM 端只有 tile 尺寸在变:32→64→128,流量逐次减半。
+2. A100 屋顶线拐点 ≈ 19.5 TFLOPS ÷ 2 TB/s = 10 FLOP/Byte。k3(8)在拐点左侧,带宽受限;k4(16)刚过拐点;k5(32)已在算力一侧。过了拐点不等于接近峰值:SMEM 指令数(MIO)、寄存器压力、bank conflict 仍在起作用,分别对应后面的 k6 向量化、k9 扫参数、k10 warptiling。
+3. 瓶颈逐级转移:GMEM 重复读 →(k3)SMEM 指令太多 →(k4)A 值只复用一次 →(k5)寄存器压力与指令数。
+
+### Lesson 6 — 向量化访存(float4)
+
+**代码**:[kernels/06_vectorized.cuh](kernels/06_vectorized.cuh)
+
+**痛点**:k5 加载阶段每线程每 BK 步发 8 条 32 位 load(4 个 A + 4 个 B),指令多,32 位传输也用不满内存通路。
+
+**手法**:GMEM→SMEM 改用 float4(128 位)。BM·BK/4 = 256 个 float4、BK·BN/4 = 256 个,与 256 线程一一对应:每线程 1 条 LDG.128 搬 A、1 条搬 B,加载指令 8 条 → 2 条。SMEM 端同样 128 位写入。附带好处:向量的行列坐标在 K 循环中不变,加载用的 div/mod 从循环里移出,只算一次。
+
+**对齐前提**:K、N 为 4 的倍数(GMEM 行首 16B 对齐);SMEM 数组声明 `__align__(16)`,行跨度 32B/512B 均为 16 的倍数。约束:BM·BK/4 == BK·BN/4 == 线程数,改参数时要保持。
+
+**验证**:SASS 里应出现 128 位 load:
+```bash
+cuobjdump -sass sgemm | grep -E 'LDG\.E' | sort | uniq -c
+# k6 的 kernel 里应是 LDG.E.128,不再是 32 位
+```
+
+**A100 实测**:待填。文章 A6000 是 k5 的 1.14×(15971→18237);A100 带宽充裕、加载占比更小,增幅可能低于文章。
