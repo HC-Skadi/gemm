@@ -43,6 +43,10 @@
 #include "kernels/04_1d_blocktiling.cuh"
 #include "kernels/05_2d_blocktiling.cuh"
 #include "kernels/06_vectorized.cuh"
+#include "kernels/09_autotuned.cuh"
+#include "kernels/10_warptiling.cuh"
+
+constexpr int WARPSIZE = 32;
 
 // ---- cuBLAS 参考实现(同时是性能基线 kernel 0)----------------------------
 //
@@ -67,6 +71,8 @@ void run_kernel(int kernel, int M, int N, int K, float alpha, float *A,
     case 4: run_1d_blocktiling(M, N, K, alpha, A, B, beta, C); break;
     case 5: run_2d_blocktiling(M, N, K, alpha, A, B, beta, C); break;
     case 6: run_vectorized(M, N, K, alpha, A, B, beta, C); break;
+    case 9: run_autotune(M, N, K, alpha, A, B, beta, C); break;
+    case 10: run_warptiling(M, N, K, alpha, A, B, beta, C); break;
     default:
       printf("未知 kernel 编号: %d\n", kernel);
       exit(EXIT_FAILURE);
